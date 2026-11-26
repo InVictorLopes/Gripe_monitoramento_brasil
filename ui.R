@@ -5,9 +5,9 @@
 #   0. cabecalho
 #   1. filtros (recorte geografico + agente etiologico)
 #   2. KPIs
-#   3. mapa (5) | evolucao semanal por agente (7)
-#   4. Rt estimado pelo painel (7) | tendencia por municipio - quadrantes (5)
-#   5. canal endemico (7) | sazonalidade (5)
+#   3. mapa (7) | [tendencia - quadrantes / evolucao semanal por agente] (5)
+#   4. abas: canal endemico | Rt estimado pelo painel
+#   5. sazonalidade
 #   6. perfil etario e gravidade
 # Aba "Análises": ranking (UFs ou municipios da UF), agentes por unidade, achados da exploratoria.
 # Aba "Sobre os dados": fonte, definicoes e limitacoes.
@@ -51,32 +51,51 @@ bslib::page_navbar(
     mod_kpi_ui("kpi"),
 
     bslib::layout_columns(
-      col_widths = c(5, 7),
-      cartao_grafico("Distribuição espacial", mod_mapa_saida("mapa", "460px"),
+      col_widths = c(7, 5),
+      cartao_grafico("Distribuição espacial", mod_mapa_saida("mapa", "905px"),
                      mod_mapa_controles("mapa")),
-      cartao_grafico("Casos semanais por agente etiológico", mod_serie_saida("serie", "460px"),
-                     mod_serie_controles("serie"),
-                     rodape = "Semana de início dos sintomas. Linha tracejada: estimativa corrigida pelo atraso de digitação (nowcast) e faixa de incerteza.")
+      bslib::layout_column_wrap(
+        width = 1,
+        # Nao e o Rt real: nome mantido igual ao do dengue_ride (ver R/mod_mapa_rt.R).
+        cartao_grafico("Rt — Tendência por UF / município (quadrantes)",
+                       mod_mapa_rt_saida("tendencia", "400px"), mod_mapa_rt_controles("tendencia"),
+                       rodape = "Não é o Rt: compara cada unidade com ela mesma em anos anteriores (X) e com a janela anterior (Y). No Brasil, um ponto por UF; num estado, os municípios dele. Segue o agente. Semana corrente fora; recentes corrigidas pelo nowcast da UF."),
+        cartao_grafico("Casos semanais por agente etiológico", mod_serie_saida("serie", "400px"),
+                       mod_serie_controles("serie"),
+                       rodape = "Semana de início dos sintomas. Linha tracejada: estimativa corrigida pelo atraso de digitação (nowcast) e faixa de incerteza.")
+      )
     ),
 
-    bslib::layout_columns(
-      col_widths = c(7, 5),
-      cartao_grafico("Rt — número de reprodução efetivo (estimado pelo painel)", mod_rt_saida("rt", "440px"),
-                     mod_rt_controles("rt"),
-                     rodape = "Acima de 1 (linha tracejada preta), os casos de SRAG estão crescendo. Faixa: IC 95%. Trecho tracejado: semanas corrigidas pelo nowcast, preliminares. Segue o recorte e o agente selecionados."),
-      # Nao e o Rt real: nome mantido igual ao do dengue_ride (ver R/mod_mapa_rt.R).
-      cartao_grafico("Rt — Tendência por UF / município (quadrantes)",
-                     mod_mapa_rt_saida("tendencia", "440px"), mod_mapa_rt_controles("tendencia"),
-                     rodape = "Não é o Rt: compara cada unidade com ela mesma em anos anteriores (X) e com a janela anterior (Y). No Brasil, um ponto por UF; num estado, os municípios dele. Segue o agente. Semana corrente fora; recentes corrigidas pelo nowcast da UF.")
+    # Diagrama de controle com o Rt estimado pelo painel como aba alternativa.
+    bslib::navset_card_tab(
+      full_screen = TRUE,
+      title = shiny::tags$span(class = "fw-semibold", "Diagrama de controle / Rt"),
+      bslib::nav_panel(
+        "Diagrama de controle (canal endêmico)",
+        bslib::card_body(
+          class = "p-0",
+          shiny::tags$div(class = "d-flex justify-content-end px-3 pt-2",
+                          bslib::popover(gatilho_opcoes(), mod_canal_controles("canal"),
+                                         title = "Diagrama de controle", placement = "left")),
+          mod_canal_saida("canal", "420px")
+        )
+      ),
+      bslib::nav_panel(
+        "Rt estimado pelo painel",
+        bslib::card_body(
+          class = "p-0",
+          shiny::tags$div(class = "d-flex justify-content-end px-3 pt-2",
+                          bslib::popover(gatilho_opcoes(), mod_rt_controles("rt"),
+                                         title = "Rt estimado pelo painel", placement = "left")),
+          mod_rt_saida("rt", "420px"),
+          shiny::tags$p(class = "small text-muted px-3",
+                        "Acima de 1 (linha tracejada preta), os casos de SRAG estão crescendo. Faixa: IC 95%. Trecho tracejado: semanas corrigidas pelo nowcast, preliminares. Segue o recorte e o agente selecionados.")
+        )
+      )
     ),
 
-    bslib::layout_columns(
-      col_widths = c(7, 5),
-      cartao_grafico("Diagrama de controle (canal endêmico)", mod_canal_saida("canal", "380px"),
-                     mod_canal_controles("canal")),
-      cartao_grafico("Sazonalidade — ano × semana epidemiológica",
-                     mod_heatmap_saida("heatmap", "420px"), mod_heatmap_controles("heatmap"))
-    ),
+    cartao_grafico("Sazonalidade — ano × semana epidemiológica",
+                   mod_heatmap_saida("heatmap", "420px"), mod_heatmap_controles("heatmap")),
 
     bslib::navset_card_tab(
       full_screen = TRUE,
