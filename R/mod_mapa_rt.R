@@ -36,6 +36,17 @@
 # sao ligados por setas ate a posicao atual. Semana sem posicao valida (sem
 # historico) fica fora da trilha.
 #
+# PROJECAO: a trilha tambem segue N_SEMANAS_FUTURAS semanas A FRENTE, em
+# tracejado (calcular_futuro). Parte da serie ja corrigida pelo nowcast (a
+# mesma do grafico) e continua a tendencia dela: casos da ultima semana x
+# crescimento semanal medio das 2 ultimas semanas contra as 2 anteriores
+# (limitado a LIMITES_CRESC_PROJ). Extrapolacao simples, rotulada "proj.".
+#
+# CORES DA TRILHA: semanas anteriores em vermelho, projetadas em verde.
+#
+# ZOOM: com um municipio em foco, o grafico abre enquadrado na trilha dele
+# (semanas passadas, atual e projetadas); a roda do mouse continua livre.
+#
 # CLIQUE: clicar num ponto pede o foco no municipio, como o clique no mapa -
 # o modulo devolve esse pedido (reactive) e o server.R aplica o recorte.
 # ==============================================================================
@@ -67,6 +78,16 @@ LARGURA_BORDA_PONTO <- 0.8
 # tamanho do ponto em foco - sem ele, municipios grandes cobrem a trilha.
 N_SEMANAS_TRILHA <- 4L
 TAMANHO_MAX_FOCO <- 26
+
+# Cores da trilha (igual ao dengue_ride): semanas ANTERIORES em vermelho e SE
+# FUTURAS (projecao do nowcast) em verde.
+COR_TRILHA_PASSADO <- "#C62828"
+COR_TRILHA_FUTURO  <- "#2E7D32"
+
+# Semanas projetadas a frente e limites do crescimento semanal da projecao:
+# sem teto, um municipio que foi de 1 para 5 casos projetaria x5 por semana.
+N_SEMANAS_FUTURAS  <- 2L
+LIMITES_CRESC_PROJ <- c(0.5, 2)
 
 # Escala divergente igual a do dengue_ride: abaixo do normal em azul, acima
 # em terracota (fixa, nao a cor da doenca, para ler igual em todos os
@@ -134,6 +155,12 @@ mod_mapa_rt_server <- function(id, geo, classes, casos_unidade = casos_por_unida
     trilha <- shiny::reactive({
       shiny::req(input$janela)
       calcular_trilha(serie_mun(), janela = input$janela)
+    })
+
+    # Posicoes projetadas das proximas semanas (nowcast + tendencia).
+    futuro <- shiny::reactive({
+      shiny::req(input$janela)
+      calcular_futuro(serie_mun(), janela = input$janela)
     })
 
     # Clique num ponto -> pedido de foco (mesmo formato do clique no mapa).
@@ -303,14 +330,18 @@ mod_mapa_rt_server <- function(id, geo, classes, casos_unidade = casos_por_unida
 
       # -- trilha das semanas anteriores do municipio em foco ----------------
       serie_trilha <- list()
+      zoom_foco    <- NULL
       if (has_sel) {
         r_sel <- d[!is.na(d$municipio_geocodigo) & d$municipio_geocodigo == sel_cod, , drop = FALSE]
         if (nrow(r_sel)) {
           atual <- if (r_sel$quadrante[1] != "sem_base") c(r_sel$x_val[1], r_sel$taxa_cresc[1]) else NULL
-          serie_trilha <- series_trilha(trilha(), sel_cod, atual,
-                                        sprintf("SE %02d", as.integer(q$se_ref_semana)),
-                                        r_sel$municipio_nome[1],
-                                        cor = PALETA[["tinta"]], cor_rotulo = PALETA[["sub"]])
+          tr <- series_trilha(trilha(), sel_cod, atual,
+                              sprintf("SE %02d", as.integer(q$se_ref_semana)),
+                              r_sel$municipio_nome[1],
+                              cor_rotulo = PALETA[["sub"]],
+                              futuros = futuro())
+          serie_trilha <- tr$series
+          zoom_foco    <- enquadrar_trilha(tr$xy)
         }
       }
 
@@ -359,9 +390,13 @@ mod_mapa_rt_server <- function(id, geo, classes, casos_unidade = casos_por_unida
             splitLine = list(lineStyle = list(color = PALETA[["linha"]], type = "dashed"))
           ),
           series = c(series_forma, serie_sem_base, linhas_ref, serie_trilha, series_legenda_cor),
+          # Com municipio em foco, abre enquadrado na trilha dele (zoom_foco);
+          # sem foco, eixos inteiros. A roda do mouse continua ajustando.
           dataZoom = list(
-            list(type = "inside", xAxisIndex = 0, filterMode = "none"),
-            list(type = "inside", yAxisIndex = 0, filterMode = "none")
+            c(list(type = "inside", xAxisIndex = 0, filterMode = "none"),
+              if (!is.null(zoom_foco)) list(startValue = zoom_foco$x[1], endValue = zoom_foco$x[2])),
+            c(list(type = "inside", yAxisIndex = 0, filterMode = "none"),
+              if (!is.null(zoom_foco)) list(startValue = zoom_foco$y[1], endValue = zoom_foco$y[2]))
           ),
           toolbox = list(feature = list(saveAsImage = list(title = "Salvar imagem"))),
           grid = list(left = 56, right = 24, top = 112, bottom = 96),
@@ -418,17 +453,25 @@ referencia_tendencia <- function(serie_mun) {
   )
 }
 
-#' Monta o quadro de tendencia: uma linha por municipio. Mesma conta do
-#' dengue_ride, exceto o historico (por deslocamento de 52 semanas).
-calcular_quadro_tendencia <- function(serie_mun, janela = 4L, ate = NULL) {
-  # `ate`: corta a base nessa semana (inclusive) - e assim que a trilha
-  # calcula a posicao das semanas anteriores. NULL = base inteira.
-  if (!is.null(ate)) serie_mun <- serie_mun[serie_mun$data_ini_se <= ate, , drop = FALSE]
+#' Serie sem a semana corrente e com as semanas recentes corrigidas pelo
+#' nowcast (ver referencia_tendencia()).
+serie_corrigida <- function(serie_mun) {
   ref <- referencia_tendencia(serie_mun)
   serie_mun <- serie_mun[serie_mun$data_ini_se <= ref$data_ref, , drop = FALSE]
   serie_mun$casos <- ref$corrigir(serie_mun$data_ini_se, serie_mun$casos, serie_mun$uf_ibge)
+  serie_mun
+}
 
-  data_max      <- ref$data_ref
+#' Monta o quadro de tendencia (`corrigir = FALSE`: a serie ja vem corrigida,
+#' caso da projecao). Uma linha por municipio. Mesma conta do
+#' dengue_ride, exceto o historico (por deslocamento de 52 semanas).
+calcular_quadro_tendencia <- function(serie_mun, janela = 4L, ate = NULL, corrigir = TRUE) {
+  # `ate`: corta a base nessa semana (inclusive) - e assim que a trilha
+  # calcula a posicao das semanas anteriores. NULL = base inteira.
+  if (!is.null(ate)) serie_mun <- serie_mun[serie_mun$data_ini_se <= ate, , drop = FALSE]
+  if (corrigir) serie_mun <- serie_corrigida(serie_mun)
+
+  data_max      <- max(serie_mun$data_ini_se)
   se_ref        <- serie_mun$se[serie_mun$data_ini_se == data_max][1]
   ano_recente   <- se_ref %/% 100L
   se_ref_semana <- se_ref %% 100L
@@ -538,42 +581,170 @@ calcular_trilha <- function(serie_mun, janela = 4L) {
   })
 }
 
-#' Series da trilha do municipio em foco: setas entre as posicoes semanais e
-#' pontos esmaecidos (com a SE) nas semanas anteriores. Vazio com < 2 posicoes.
+#' Semana epidemiologica (ano, semana) de datas de inicio de SE (domingo).
+#' Ano epidemiologico = ano da quarta-feira da semana; semana 1 = a que
+#' contem 4 de janeiro.
+epi_semana <- function(dt) {
+  ano <- as.integer(format(dt + 3L, "%Y"))
+  jan4 <- as.Date(sprintf("%d-01-04", ano))
+  ini1 <- jan4 - as.integer(format(jan4, "%w"))
+  list(ano = ano, semana = as.integer(as.numeric(dt - ini1) %/% 7) + 1L)
+}
+
+#' Serie estendida para a projecao: a serie corrigida pelo nowcast (a mesma
+#' do grafico) + as `n_fut` semanas seguintes projetadas, por municipio.
+#'
+#' Semanas futuras: casos da ultima semana x g^k, onde g = crescimento
+#' semanal medio das 2 ultimas semanas contra as 2 anteriores -
+#' ((s1 + s2) / (s3 + s4))^(1/2) - limitado a LIMITES_CRESC_PROJ. Sem base
+#' para o crescimento, g = 1.
+projetar_nowcast <- function(serie_mun, n_fut = N_SEMANAS_FUTURAS) {
+  s <- as.data.frame(serie_corrigida(serie_mun))
+  data_max <- max(s$data_ini_se, na.rm = TRUE)
+
+  ult <- s |>
+    dplyr::filter(data_ini_se > data_max - 28L) |>
+    dplyr::group_by(municipio_geocodigo) |>
+    dplyr::summarise(
+      recente   = sum(casos[data_ini_se >  data_max - 14L], na.rm = TRUE),
+      anterior  = sum(casos[data_ini_se <= data_max - 14L], na.rm = TRUE),
+      ult_casos = sum(casos[data_ini_se == data_max], na.rm = TRUE),
+      .groups   = "drop"
+    ) |>
+    dplyr::mutate(
+      g = dplyr::if_else(anterior > 0, sqrt(recente / anterior), 1),
+      g = pmin(pmax(g, LIMITES_CRESC_PROJ[1]), LIMITES_CRESC_PROJ[2])
+    )
+
+  # Linha da ultima semana de cada municipio como molde (mantem nome, pop e
+  # demais colunas da unidade); troca data, SE e casos.
+  base <- s[s$data_ini_se == data_max, , drop = FALSE]
+  base <- base[match(ult$municipio_geocodigo, base$municipio_geocodigo), , drop = FALSE]
+  fut <- do.call(rbind, lapply(seq_len(n_fut), function(k) {
+    dt <- data_max + 7L * k
+    ep <- epi_semana(dt)
+    b <- base
+    b$data_ini_se <- dt
+    b$ano <- ep$ano; b$semana <- ep$semana; b$se <- ep$ano * 100L + ep$semana
+    b$casos <- ult$ult_casos * ult$g^k
+    b
+  }))
+  rbind(s, fut)
+}
+
+#' Posicao projetada de cada municipio nas proximas semanas - mesmo formato de
+#' calcular_trilha(): list(semana = "SE 29", pos = data.frame(cod, x, y)).
+calcular_futuro <- function(serie_mun, janela = 4L, n_fut = N_SEMANAS_FUTURAS) {
+  ext <- projetar_nowcast(serie_mun, n_fut)
+  data_max <- referencia_tendencia(serie_mun)$data_ref
+  lapply(seq_len(n_fut), function(k) {
+    q  <- calcular_quadro_tendencia(ext, janela, ate = data_max + 7L * k, corrigir = FALSE)
+    ok <- q$dados[q$dados$quadrante != "sem_base" & !is.na(q$dados$x_val) &
+                    !is.na(q$dados$taxa_cresc), , drop = FALSE]
+    list(semana = sprintf("SE %02d", as.integer(q$se_ref_semana)),
+         pos = data.frame(cod = ok$municipio_geocodigo, x = ok$x_val, y = ok$taxa_cresc))
+  })
+}
+
+#' Janela de zoom que enquadra os pontos da trilha (matriz n x 2), com folga.
+#' Bordas arredondadas para multiplos de `passo` - o eixo exibe o valor da
+#' borda, e "0,385x" no canto do grafico confunde. NULL se nao houver pontos.
+enquadrar_trilha <- function(xy, folga = 0.35, span_min = 0.4, passo = 0.05) {
+  if (is.null(xy) || !nrow(xy)) return(NULL)
+  faixa <- function(v) {
+    r <- range(v, na.rm = TRUE)
+    m <- max(diff(r) * folga, (span_min - diff(r)) / 2, 0.05)
+    c(max(0, floor((r[1] - m) / passo) * passo), ceiling((r[2] + m) / passo) * passo)
+  }
+  list(x = round(faixa(xy[, 1]), 2), y = round(faixa(xy[, 2]), 2))
+}
+
+#' Series da trilha do municipio em foco.
+#'
+#' Passado (vermelho): setas solidas entre as posicoes semanais e pontos
+#' esmaecidos (com a SE). Futuro (verde) (`futuros`, ver calcular_futuro()): setas TRACEJADAS a partir
+#' da posicao atual e pontos vazados tracejados, rotulados "SE xx (proj.)".
 #'
 #' @param atual c(x, y) da semana atual, ou NULL se ela estiver sem historico.
-series_trilha <- function(passos, cod, atual, se_atual, nome, cor, cor_rotulo) {
-  pts <- list()
-  for (p in passos) {
-    i <- match(cod, p$pos$cod)
-    if (!is.na(i)) pts[[length(pts) + 1L]] <- list(se = p$semana, xy = c(p$pos$x[i], p$pos$y[i]))
+#' @return list(series = <series ECharts>, xy = <matriz n x 2 de todos os
+#'   pontos da trilha, para o zoom>).
+series_trilha <- function(passos, cod, atual, se_atual, nome, cor_rotulo,
+                          cor_passado = COR_TRILHA_PASSADO,
+                          cor_futuro  = COR_TRILHA_FUTURO,
+                          futuros = list()) {
+  coletar <- function(lst) {
+    out <- list()
+    for (p in lst) {
+      i <- match(cod, p$pos$cod)
+      if (!is.na(i)) out[[length(out) + 1L]] <- list(se = p$semana, xy = c(p$pos$x[i], p$pos$y[i]))
+    }
+    out
   }
+  pts <- coletar(passos)
   if (!is.null(atual)) pts[[length(pts) + 1L]] <- list(se = se_atual, xy = atual)
-  n <- length(pts)
-  if (n < 2L) return(list())
+  fut <- coletar(futuros)
 
+  todos_xy <- do.call(rbind, lapply(c(pts, fut), `[[`, "xy"))
+  n <- length(pts)
+  num <- function(v) formatC(v, format = "f", digits = 2, decimal.mark = ",")
   # A seta para antes do alvo: no ponto em foco (grande) ela sumiria por baixo.
   encurtar <- function(a, b, f) a + (b - a) * f
-  segmentos <- lapply(seq_len(n - 1L), function(i) list(coords = list(
-    as.list(pts[[i]]$xy),
-    as.list(encurtar(pts[[i]]$xy, pts[[i + 1L]]$xy, if (i == n - 1L) 0.82 else 0.9))
-  )))
-  num <- function(v) formatC(v, format = "f", digits = 2, decimal.mark = ",")
-  fantasmas <- lapply(pts[-n], function(p) list(
-    value = as.list(round(p$xy, 3)), se = p$se, name = nome, cod = as.character(cod),
-    tt = sprintf("<b>%s</b> · %s<br/>Vs. mediana histórica: <b>%sx</b><br/>Vs. janela anterior: <b>%sx</b>",
-                 nome, p$se, num(p$xy[1]), num(p$xy[2]))
-  ))
+  series <- list()
 
-  list(
-    list(name = "__trilha__", type = "lines", coordinateSystem = "cartesian2d", silent = TRUE,
-         z = 3, symbol = list("none", "arrow"), symbolSize = 9,
-         lineStyle = list(color = cor, width = 1.6, type = "solid", opacity = 0.75),
-         data = segmentos),
-    list(name = "__trilha__", type = "scatter", z = 3, symbol = "circle", symbolSize = 9,
-         itemStyle = list(color = "#FFFFFF", borderColor = cor, borderWidth = 1.5, opacity = 0.95),
-         label = list(show = TRUE, position = "bottom", fontSize = 9, color = cor_rotulo,
-                      formatter = htmlwidgets::JS("function(p){ return p.data.se; }")),
-         data = fantasmas)
-  )
+  if (n >= 2L) {
+    segmentos <- lapply(seq_len(n - 1L), function(i) list(coords = list(
+      as.list(pts[[i]]$xy),
+      as.list(encurtar(pts[[i]]$xy, pts[[i + 1L]]$xy, if (i == n - 1L) 0.82 else 0.9))
+    )))
+    fantasmas <- lapply(pts[-n], function(p) list(
+      value = as.list(round(p$xy, 3)), se = p$se, name = nome, cod = as.character(cod),
+      tt = sprintf("<b>%s</b> · %s<br/>Vs. mediana histórica: <b>%sx</b><br/>Vs. janela anterior: <b>%sx</b>",
+                   nome, p$se, num(p$xy[1]), num(p$xy[2]))
+    ))
+    series <- c(series, list(
+      list(name = "__trilha__", type = "lines", coordinateSystem = "cartesian2d", silent = TRUE,
+           z = 3, symbol = list("none", "arrow"), symbolSize = 9,
+           lineStyle = list(color = cor_passado, width = 1.6, type = "solid", opacity = 0.85),
+           data = segmentos),
+      list(name = "__trilha__", type = "scatter", z = 3, symbol = "circle", symbolSize = 9,
+           itemStyle = list(color = "#FFFFFF", borderColor = cor_passado, borderWidth = 1.5, opacity = 0.95),
+           label = list(show = TRUE, position = "bottom", fontSize = 9, color = cor_rotulo,
+                        formatter = htmlwidgets::JS("function(p){ return p.data.se; }")),
+           data = fantasmas)
+    ))
+  }
+
+  # -- projecao: so faz sentido a partir de uma posicao atual valida ---------
+  if (!is.null(atual) && length(fut)) {
+    cadeia <- c(list(list(se = se_atual, xy = atual)), fut)
+    m <- length(cadeia)
+    seg_fut <- lapply(seq_len(m - 1L), function(i) list(coords = list(
+      # sai da borda do ponto atual (grande), nao do centro
+      as.list(if (i == 1L) encurtar(cadeia[[1]]$xy, cadeia[[2]]$xy, 0.18) else cadeia[[i]]$xy),
+      as.list(encurtar(cadeia[[i]]$xy, cadeia[[i + 1L]]$xy, 0.9))
+    )))
+    pontos_fut <- lapply(fut, function(p) list(
+      value = as.list(round(p$xy, 3)), se = paste0(p$se, " (proj.)"), name = nome,
+      cod = as.character(cod),
+      tt = sprintf(paste0("<b>%s</b> · %s <i>(projeção)</i><br/>Vs. mediana histórica: <b>%sx</b>",
+                          "<br/>Vs. janela anterior: <b>%sx</b><br/><span style=\"opacity:.7\">",
+                          "Nowcast + tendência das últimas semanas</span>"),
+                   nome, p$se, num(p$xy[1]), num(p$xy[2]))
+    ))
+    series <- c(series, list(
+      list(name = "__trilha__", type = "lines", coordinateSystem = "cartesian2d", silent = TRUE,
+           z = 3, symbol = list("none", "arrow"), symbolSize = 8,
+           lineStyle = list(color = cor_futuro, width = 1.6, type = "dashed", opacity = 0.85),
+           data = seg_fut),
+      list(name = "__trilha__", type = "scatter", z = 3, symbol = "circle", symbolSize = 9,
+           itemStyle = list(color = "rgba(255,255,255,0.6)", borderColor = cor_futuro, borderWidth = 1.5,
+                            borderType = "dashed", opacity = 0.85),
+           label = list(show = TRUE, position = "bottom", fontSize = 9, color = cor_rotulo,
+                        fontStyle = "italic",
+                        formatter = htmlwidgets::JS("function(p){ return p.data.se; }")),
+           data = pontos_fut)
+    ))
+  }
+
+  list(series = series, xy = todos_xy)
 }
