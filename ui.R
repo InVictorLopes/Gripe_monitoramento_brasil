@@ -5,7 +5,7 @@
 #   0. cabecalho
 #   1. filtros (recorte geografico + agente etiologico)
 #   2. KPIs
-#   3. mapa (7) | [tendencia - quadrantes / evolucao semanal por agente] (5)
+#   3. mapa (6) | [tendencia - quadrantes / evolucao semanal por agente] (6)
 #   4. abas: canal endemico | Rt estimado pelo painel
 #   5. sazonalidade
 #   6. perfil etario e gravidade
@@ -51,7 +51,7 @@ bslib::page_navbar(
     mod_kpi_ui("kpi"),
 
     bslib::layout_columns(
-      col_widths = c(7, 5),
+      col_widths = c(6, 6),
       cartao_grafico("Distribuição espacial", mod_mapa_saida("mapa", "905px"),
                      mod_mapa_controles("mapa")),
       bslib::layout_column_wrap(
