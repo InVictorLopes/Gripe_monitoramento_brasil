@@ -91,6 +91,11 @@ gripe_ui_assets <- function() {
     shiny::singleton(shiny::tags$style(shiny::HTML(
       ".selectize-dropdown { z-index: 1080 !important; }"
     ))),
+    # Na tela cheia o grafico ocupa a altura do card, em vez de ficar com a
+    # altura fixa da grade e sobrar espaco (ou esticar o canvas).
+    shiny::singleton(shiny::tags$style(shiny::HTML(
+      ".bslib-card[data-full-screen='true'] .card-body > .echarts4r { height: 100% !important; min-height: 70vh; flex: 1 1 auto; }"
+    ))),
     shiny::singleton(shiny::tags$script(shiny::HTML(
 "(function() {
   function insidePicker(t) {
@@ -117,6 +122,40 @@ gripe_ui_assets <- function() {
       if (trg && (trg === e.target || trg.contains(e.target))) return;
       hide(tip);
     });
+  });
+  // Graficos que esticam com o card (expandir/tela cheia, abas, coluna 50/50):
+  // o canvas do ECharts nao acompanha o tamanho do container sozinho e fica
+  // esticado/deformado. Um ResizeObserver por widget chama resize().
+  function rz(el) {
+    if (!window.echarts) return;
+    var inst = echarts.getInstanceByDom(el) ||
+               (el.firstElementChild && echarts.getInstanceByDom(el.firstElementChild));
+    if (inst) inst.resize();
+  }
+  var ro = window.ResizeObserver ? new ResizeObserver(function(es) {
+    es.forEach(function(e) { rz(e.target); });
+  }) : null;
+  function watch(root) {
+    if (!ro || !root.querySelectorAll) return;
+    root.querySelectorAll('.echarts4r').forEach(function(el) {
+      if (el.__rzWatch) return;
+      el.__rzWatch = true;
+      ro.observe(el);
+    });
+  }
+  new MutationObserver(function() { watch(document); })
+    .observe(document.documentElement, { childList: true, subtree: true });
+  document.addEventListener('DOMContentLoaded', function() { watch(document); });
+  // Ao entrar/sair da tela cheia e ao trocar de aba: resize depois da transicao.
+  function rzAll() { document.querySelectorAll('.echarts4r').forEach(rz); }
+  document.addEventListener('click', function(e) {
+    if (e.target.closest && e.target.closest('.bslib-full-screen-enter, .bslib-full-screen-exit, [data-bs-toggle=\"tab\"]')) {
+      setTimeout(rzAll, 60); setTimeout(rzAll, 350);
+    }
+  });
+  document.addEventListener('shown.bs.tab', function() { setTimeout(rzAll, 30); });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') { setTimeout(rzAll, 60); setTimeout(rzAll, 350); }
   });
   document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape') return;
